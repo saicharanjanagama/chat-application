@@ -37,7 +37,7 @@ function Header({ user }) {
   return (
     <>
       <HeaderWrapper >
-        <Title>🔥 Chat App</Title>
+        <Title>💬 Chat App</Title>
         <AvatarMenuWrapper ref={menuRef}>
           {/* Avatar */}
           <Avatar
