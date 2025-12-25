@@ -113,17 +113,17 @@ function ChatRoom({ roomId, user, leaveRoom, canDelete, onDelete }) {
             const now = Date.now();
             setPresenceUsers(
                 snap.docs
-                .map(d => ({ uid: d.id, ...d.data() }))
-                .filter(u => {
-                    const t = u.lastSeen?.toDate
-                    ? u.lastSeen.toDate().getTime()
-                    : 0;
-                    return now - t < 60_000;
-                })
+                    .map(d => ({ uid: d.id, ...d.data() }))
+                    .filter(u => {
+                        const t = u.lastSeen?.toDate
+                            ? u.lastSeen.toDate().getTime()
+                            : 0;
+                        return now - t < 60_000;
+                    })
             );
         });
         return unsub;
-    }, [roomId]);
+    }, [presenceRef]);
 
     /* ---------------- PRESENCE HEARTBEAT ---------------- */
     useEffect(() => {
