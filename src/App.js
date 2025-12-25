@@ -10,8 +10,6 @@ import Header from "./components/Header";
 import SignIn from "./components/SignIn";
 import ChatRooms from "./features/rooms/ChatRooms";
 
-import styled from "styled-components";
-
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);

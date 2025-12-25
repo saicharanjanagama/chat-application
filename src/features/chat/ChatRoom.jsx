@@ -271,18 +271,19 @@ function ChatRoom({ roomId, user, leaveRoom, canDelete, onDelete }) {
     };
 
     useEffect(() => {
+        const timeout = typingTimeoutRef.current;
+
         return () => {
-            // 🔥 clear debounce timer
-            if (typingTimeoutRef.current) {
-                clearTimeout(typingTimeoutRef.current);
+            if (timeout) {
+                clearTimeout(timeout);
             }
 
-            // 🔥 remove typing doc for old room
             deleteDoc(
                 doc(firestore, "rooms", roomId, "typing", user.uid)
             );
         };
     }, [roomId, user.uid]);
+
 
 
     /* ---------------- ADD OPEN FILE PICKER FUNCTION ---------------- */

@@ -19,13 +19,13 @@ function ChatRooms({ user }) {
   const [currentRoom, setCurrentRoom] = useState(null);
 
   /* ---------------- Listen to rooms ---------------- */
-  useEffect(
-    () =>
-      onSnapshot(roomsRef, snap =>
-        setRooms(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-      ),
-    []
-  );
+  useEffect(() => {
+    const unsub = onSnapshot(roomsRef, snap =>
+      setRooms(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    );
+    return unsub;
+  }, [roomsRef]);
+
 
   /* ---------------- Create room ---------------- */
   const createRoom = async () => {
