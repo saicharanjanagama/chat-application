@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import styled from "styled-components";
+import { motion } from "framer-motion";
 import { doc, onSnapshot, updateDoc } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { firestore, storage } from "../../services/firebase";
@@ -11,8 +12,13 @@ function Profile({ user, onClose }) {
   const [about, setAbout] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [preview, setPreview] = useState(null);
 
-  /* ---------- Load profile ---------- */
+  const cardRef = useRef();
+
+  /* ---------------- REALTIME PROFILE ---------------- */
+
   useEffect(() => {
     const unsub = onSnapshot(
       doc(firestore, "users", uid),
@@ -20,7 +26,6 @@ function Profile({ user, onClose }) {
         const data = snap.data();
         setProfile(data);
 
-        // 🚫 do not override local edits
         if (!isEditing) {
           setAbout(data?.about || "");
         }
@@ -30,11 +35,32 @@ function Profile({ user, onClose }) {
     return () => unsub();
   }, [uid, isEditing]);
 
-  /* ---------- Upload Avatar ---------- */
+  /* ---------------- CLOSE ON ESC ---------------- */
+
+  useEffect(() => {
+    const handleKey = e => {
+      if (e.key === "Escape") onClose();
+    };
+
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  /* ---------------- CLOSE ON OUTSIDE CLICK ---------------- */
+
+  const handleOutsideClick = e => {
+    if (cardRef.current && !cardRef.current.contains(e.target)) {
+      onClose();
+    }
+  };
+
+  /* ---------------- AVATAR UPLOAD ---------------- */
+
   const handleAvatarChange = async e => {
     const file = e.target.files[0];
     if (!file) return;
 
+    setPreview(URL.createObjectURL(file));
     setUploading(true);
 
     try {
@@ -43,8 +69,10 @@ function Profile({ user, onClose }) {
       const url = await getDownloadURL(fileRef);
 
       await updateDoc(doc(firestore, "users", uid), {
-        photoURL: url,
+        photoURL: url
       });
+
+      setPreview(null);
     } catch (err) {
       console.error(err);
       alert("Upload failed");
@@ -53,76 +81,101 @@ function Profile({ user, onClose }) {
     setUploading(false);
   };
 
-  /* ---------- Save About ---------- */
+  /* ---------------- SAVE ABOUT ---------------- */
+
   const saveAbout = async () => {
-    await updateDoc(doc(firestore, "users", uid), {
-      about,
-    });
+    if (about === profile?.about) {
+      setIsEditing(false);
+      return;
+    }
+
+    setSaving(true);
+
+    try {
+      await updateDoc(doc(firestore, "users", uid), {
+        about
+      });
+    } catch (err) {
+      console.error(err);
+      alert("Save failed");
+    }
+
+    setSaving(false);
     setIsEditing(false);
   };
 
   return (
-    <Overlay>
-      <Card>
+    <Overlay onClick={handleOutsideClick}>
+      <Card
+        ref={cardRef}
+        as={motion.div}
+        initial={{ opacity: 0, scale: 0.9 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.2 }}
+      >
         <Title>Profile</Title>
 
-        {/* Avatar */}
-        <Avatar
-          src={profile?.photoURL || user.photoURL}
-          referrerPolicy="no-referrer"
-        />
-
-        <UploadLabel>
-          {uploading ? "Uploading..." : "Change photo"}
-          <input
-            type="file"
-            hidden
-            accept="image/*"
-            onChange={handleAvatarChange}
+        <AvatarWrapper>
+          <Avatar
+            src={
+              preview ||
+              profile?.photoURL ||
+              user.photoURL ||
+              "https://ui-avatars.com/api/?name=User"
+            }
+            referrerPolicy="no-referrer"
           />
-        </UploadLabel>
 
-        {/* Name */}
-        <Name>{profile?.name || user.displayName}</Name>
+          <UploadLabel>
+            {uploading ? "Uploading..." : "Change Photo"}
+            <input
+              type="file"
+              hidden
+              accept="image/*"
+              onChange={handleAvatarChange}
+            />
+          </UploadLabel>
+        </AvatarWrapper>
 
-        {/* About / Status */}
+        <Name>
+          {profile?.name || user.displayName || "User"}
+        </Name>
+
         {!isEditing ? (
-        <AboutText
+          <AboutText
             onClick={() => setIsEditing(true)}
             title="Click to edit status"
-        >
+          >
             {profile?.about || "Click to add your status"}
-        </AboutText>
+          </AboutText>
         ) : (
-        <Textarea
+          <Textarea
             autoFocus
             placeholder="About / Status"
             value={about}
             onChange={e => setAbout(e.target.value)}
-            onBlur={async () => {
-            if (about !== profile?.about) {
-                await updateDoc(
-                doc(firestore, "users", uid),
-                { about }
-                );
-            }
-            setIsEditing(false);
-            }}
-        />
+          />
         )}
 
-
-        {/* Actions */}
         <Actions>
           {isEditing ? (
             <>
-              <Primary onClick={saveAbout}>Save</Primary>
-              <Secondary onClick={() => setIsEditing(false)}>
+              <Primary
+                disabled={saving}
+                onClick={saveAbout}
+              >
+                {saving ? "Saving..." : "Save"}
+              </Primary>
+              <Secondary
+                onClick={() => setIsEditing(false)}
+              >
                 Cancel
               </Secondary>
             </>
           ) : (
-            <Secondary onClick={onClose}>Close</Secondary>
+            <Secondary onClick={onClose}>
+              Close
+            </Secondary>
           )}
         </Actions>
       </Card>
@@ -130,102 +183,131 @@ function Profile({ user, onClose }) {
   );
 }
 
-/* ---------------- Styles ---------------- */
+/* ---------------- STYLING ---------------- */
 
 const Overlay = styled.div`
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.6);
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(6px);
   display: flex;
   justify-content: center;
   align-items: center;
-  z-index: 50;
+  z-index: 200;
 `;
 
 const Card = styled.div`
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    background: #111827;
-    padding: 28px;
-    width: 320px;
-    border-radius: 16px;
-    text-align: center;
+  background: #0f172a;
+  width: 340px;
+  padding: 28px;
+  border-radius: 20px;
+  text-align: center;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
 `;
 
 const Title = styled.h2`
-  margin-bottom: 10px;
+  margin-bottom: 14px;
+  color: white;
+`;
+
+const AvatarWrapper = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 `;
 
 const Avatar = styled.img`
-  width: 110px;
-  height: 110px;
+  width: 120px;
+  height: 120px;
   border-radius: 50%;
   object-fit: cover;
-  margin: 10px 0;
+  border: 3px solid #2563eb;
+  margin-bottom: 10px;
 `;
 
 const UploadLabel = styled.label`
-  display: inline-block;
-  margin-bottom: 10px;
+  font-size: 13px;
   color: #38bdf8;
   cursor: pointer;
-  font-size: 14px;
+  transition: 0.2s;
+
+  &:hover {
+    color: #60a5fa;
+  }
 `;
 
 const Name = styled.h3`
-  margin: 10px 0;
+  margin: 12px 0;
+  color: white;
 `;
 
 const AboutText = styled.p`
   font-size: 14px;
-  color: #9ca3af;
-  margin: 8px 0 16px;
+  color: #94a3b8;
+  margin-bottom: 16px;
   cursor: pointer;
-  line-height: 1.4;
+  min-height: 40px;
 
   &:hover {
-    color: #e5e7eb;
+    color: #e2e8f0;
   }
 `;
 
 const Textarea = styled.textarea`
   width: 100%;
-  height: 70px;
-  background: #1f2937;
-  border: none;
-  border-radius: 8px;
+  height: 80px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 10px;
   padding: 10px;
   color: white;
   resize: none;
-  margin-bottom: 10px;
+  margin-bottom: 16px;
+
+  &:focus {
+    outline: none;
+    border-color: #2563eb;
+  }
 `;
 
 const Actions = styled.div`
   display: flex;
   gap: 10px;
-  width: 100%;
 `;
 
 const Primary = styled.button`
   flex: 1;
-  padding: 8px;
-  border-radius: 8px;
+  padding: 10px;
+  border-radius: 10px;
   border: none;
   background: #2563eb;
   color: white;
   cursor: pointer;
+  transition: 0.2s;
+
+  &:hover {
+    background: #1d4ed8;
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
 `;
 
 const Secondary = styled.button`
   flex: 1;
-  padding: 8px;
-  border-radius: 8px;
+  padding: 10px;
+  border-radius: 10px;
   border: none;
-  background: #374151;
+  background: #334155;
   color: white;
   cursor: pointer;
+  transition: 0.2s;
+
+  &:hover {
+    background: #475569;
+  }
 `;
 
 export default Profile;

@@ -17,7 +17,7 @@ function App() {
   useEffect(() => {
     return onAuthStateChanged(auth, async u => {
       if (u) {
-        await u.reload();
+        // await u.reload();
 
         // 🔥 CREATE / UPDATE USER PROFILE
         await setDoc(

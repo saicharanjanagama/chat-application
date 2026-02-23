@@ -12,679 +12,626 @@ import {
   setDoc,
   query,
   orderBy,
-  getDoc,
+  getDocs
 } from "firebase/firestore";
 
-import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import {
+  ref as storageRef,
+  uploadBytes,
+  getDownloadURL
+} from "firebase/storage";
 
 import { firestore, storage } from "../../services/firebase";
-
 import ChatMessage from "../../components/ChatMessage";
 import { onlineDuration, shortName, avatarFromSeed } from "../../utils/helpers";
 
 function ChatRoom({ roomId, user, leaveRoom, canDelete, onDelete }) {
-    const [showEmoji, setShowEmoji] = useState(false);
 
-    const dummyRef = useRef(null);
-    const fileInputRef = useRef(null);
-    const [pendingFile, setPendingFile] = useState(null);
-
-    const [messages, setMessages] = useState([]);
-    const [typingUsers, setTypingUsers] = useState([]);
-    const [usersMap, setUsersMap] = useState({});
-    const [presenceUsers, setPresenceUsers] = useState([]);
-    const [value, setValue] = useState("");
-
-    const typingNames = typingUsers
-    .filter(uid => uid !== user.uid)
-    .map(uid => usersMap[uid]?.name || "Someone");
-  
-    const presenceRef = collection(firestore, `rooms/${roomId}/presence`);
-
-    /* ---------------- MESSAGES (ORDERED) ---------------- */
-    useEffect(() => {
-        setMessages([]);
-
-        const q = query(
-            collection(firestore, `rooms/${roomId}/messages`),
-            orderBy("createdAt", "asc")
-        );
-
-        const unsub = onSnapshot(q, snap => {
-            setMessages(
-                snap.docs.map(d => ({ id: d.id, ...d.data() }))
-            );
-
-            setTimeout(() => {
-                dummyRef.current?.scrollIntoView({ behavior: "smooth" });
-            }, 80);
-        });
-
-        return () => unsub();
-    }, [roomId]);
-
-    /* ---------------- ROOM EXISTENCE WATCH ---------------- */
-    useEffect(() => {
-        if (!roomId) return;
-
-        const roomRef = doc(firestore, "rooms", roomId);
-
-        const unsub = onSnapshot(roomRef, snap => {
-            if (!snap.exists()) {
-                leaveRoom(); // 👈 FORCE EXIT
-            }
-        });
-
-        return () => unsub();
-    }, [roomId, leaveRoom]);
-
-    /* ---------------- TYPING ---------------- */
-
-    useEffect(() => {
-        const unsub = onSnapshot(
-            collection(firestore, "users"),
-            snap => {
-                const map = {};
-                snap.forEach(doc => {
-                    map[doc.id] = doc.data();
-                });
-                setUsersMap(map);
-            }
-        );
-
-        return () => unsub();
-    }, []);
-
-    useEffect(() => {
-        const unsub = onSnapshot(
-            collection(firestore, "rooms", roomId, "typing"),
-            snap => {
-                setTypingUsers(snap.docs.map(d => d.id));
-            }
-        );
-
-        return () => unsub();
-    }, [roomId]);
-
-
-    /* ---------------- PRESENCE ---------------- */
-    useEffect(() => {
-        const unsub = onSnapshot(presenceRef, snap => {
-            const now = Date.now();
-            setPresenceUsers(
-                snap.docs
-                    .map(d => ({ uid: d.id, ...d.data() }))
-                    .filter(u => {
-                        const t = u.lastSeen?.toDate
-                            ? u.lastSeen.toDate().getTime()
-                            : 0;
-                        return now - t < 60_000;
-                    })
-            );
-        });
-        return unsub;
-    }, [presenceRef]);
-
-    /* ---------------- PRESENCE HEARTBEAT ---------------- */
-    useEffect(() => {
-        if (!roomId) return;
-
-        const ref = doc(
-            firestore,
-            `rooms/${roomId}/presence/${user.uid}`
-        );
-
-        let stopped = false;
-
-        const beat = async () => {
-            if (stopped) return;
-
-            const roomSnap = await getDoc(
-                doc(firestore, "rooms", roomId)
-            );
-
-            if (!roomSnap.exists()) {
-                stopped = true;
-                return;
-            }
-
-            await setDoc(
-                ref,
-                {
-                    lastSeen: serverTimestamp(),
-                    email: user.email,
-                    displayName: user.displayName || shortName(user.email),
-                    photoURL: user.photoURL || null,
-                },
-                { merge: true }
-            );
-        };
-
-        beat();
-        const interval = setInterval(beat, 20_000);
-
-        return () => {
-            stopped = true;
-            clearInterval(interval);
-        };
-    }, [roomId, user, leaveRoom]);
-
-    /* ---------------- SEND MESSAGE ---------------- */
-    const handleSend = async e => {
-        e.preventDefault();
-
-        // 🚫 nothing to send
-        if (!value.trim() && !pendingFile) return;
-
-        // 🔴 room deleted check (keep yours if already present)
-
-        let messageData = {
-            uid: user.uid,
-            displayName:
-            user.displayName || user.email?.split("@")[0] || "Guest",
-            photoURL: user.photoURL || null,
-            createdAt: serverTimestamp(),
-        };
-
-        // 🖼 MEDIA MESSAGE
-        if (pendingFile) {
-            const path = `chat/${roomId}/${Date.now()}_${pendingFile.name}`;
-            const fileRef = storageRef(storage, path);
-
-            await uploadBytes(fileRef, pendingFile);
-            const url = await getDownloadURL(fileRef);
-
-            let type = "file";
-            if (pendingFile.type.startsWith("image")) type = "image";
-            else if (pendingFile.type.startsWith("video")) type = "video";
-
-            messageData = {
-                ...messageData,
-                type,
-                text: value || "",          // ✅ caption
-                fileURL: url,
-                fileName: pendingFile.name,
-                storagePath: path,
-            };
-
-            setPendingFile(null); // clear media
-        }
-        // 💬 TEXT ONLY MESSAGE
-        else {
-            messageData = {
-                ...messageData,
-                type: "text",
-                text: value,
-            };
-        }
-
-        await addDoc(
-            collection(firestore, `rooms/${roomId}/messages`),
-            messageData
-        );
-
-        setValue("");
-    };
-
-    useEffect(() => {
-        return () => {
-            if (pendingFile) {
-                URL.revokeObjectURL(pendingFile);
-            }
-        };
-    }, [pendingFile]);
-
-
-    /* ---------------- HANDLE TYPING ---------------- */
-
-    const typingTimeoutRef = useRef(null);
-
-    const handleTyping = async e => {
-        const text = e.target.value;
-        setValue(text);
-
-        const ref = doc(
-            firestore,
-            "rooms",
-            roomId,
-            "typing",
-            user.uid
-        );
-
-        if (text.trim()) {
-            await setDoc(ref, {
-                uid: user.uid,
-                at: serverTimestamp(),
-            });
-
-            // 🔥 debounce stop typing (SAFE)
-            if (typingTimeoutRef.current) {
-                clearTimeout(typingTimeoutRef.current);
-            }
-
-            // typingTimeoutRef.current = setTimeout(async () => {
-            //     await deleteDoc(ref);
-            // }, 1200);
-        } else {
-            await deleteDoc(ref);
-        }
-    };
-
-    useEffect(() => {
-        const timeout = typingTimeoutRef.current;
-
-        return () => {
-            if (timeout) {
-                clearTimeout(timeout);
-            }
-
-            deleteDoc(
-                doc(firestore, "rooms", roomId, "typing", user.uid)
-            );
-        };
-    }, [roomId, user.uid]);
-
-
-
-    /* ---------------- ADD OPEN FILE PICKER FUNCTION ---------------- */
-
-    const openFilePicker = () => {
-        fileInputRef.current?.click();
-    };
-
-    const handleFileSelect = file => {
-        if (!file) return;
-        setPendingFile(file); // store file, don’t upload yet
-    };
-
-
-    return (
-        <ChatWrapper>
-            <ChatTop>
-                <Muted>Online: {presenceUsers.length}</Muted>
-
-                <ChatActions>
-                    <ActionBtn onClick={leaveRoom}>
-                        ← Back
-                    </ActionBtn>
-
-                    {canDelete && (
-                        <ActionBtn $danger onClick={onDelete}>
-                            🗑 Delete
-                        </ActionBtn>
-                    )}
-                </ChatActions>
-            </ChatTop>
-
-            <PresenceList>
-                {presenceUsers.map(u => (
-                    <PresenceItem key={u.uid}>
-                        <AvatarSm
-                        src={
-                            u.photoURL ||
-                            avatarFromSeed(u.displayName || u.uid)
-                        }
-                        referrerPolicy="no-referrer"
-                        alt="user"
-                        onError={e => {
-                            e.currentTarget.src = avatarFromSeed(u.uid);
-                        }}
-                        />
-                        
-                        <span>
-                            {u.displayName} - {onlineDuration(u.lastSeen)}
-                        </span>
-                    </PresenceItem>
-                ))}
-            </PresenceList>
-
-            <Messages>
-                {messages.map(m => (
-                    <ChatMessage
-                    key={m.id}
-                    message={m}
-                    currentUid={user.uid}
-                    roomId={roomId}
-                    />
-                ))}
-                <div ref={dummyRef} />
-            </Messages>
-
-            {typingNames.length > 0 && (
-                <Typing>
-                    {typingNames.length === 1
-                    ? `${typingNames[0]} is typing…`
-                    : `${typingNames.join(", ")} are typing…`}
-                </Typing>
-            )}
-
-            <ChatInputWrapper>
-                {pendingFile && (
-                    <PreviewBox>
-                        {pendingFile.type.startsWith("image") && (
-                            <img
-                            src={URL.createObjectURL(pendingFile)}
-                            alt="preview"
-                            />
-                        )}
-
-                        {pendingFile.type.startsWith("video") && (
-                            <video controls>
-                                <source
-                                src={URL.createObjectURL(pendingFile)}
-                                />
-                            </video>
-                        )}
-
-                        {!pendingFile.type.startsWith("image") &&
-                        !pendingFile.type.startsWith("video") && (
-                            <FilePreview>
-                                📄 <span>{pendingFile.name}</span>
-                            </FilePreview>
-                        )}
-
-                        <CancelPreview onClick={() => setPendingFile(null)}>
-                            ✕
-                        </CancelPreview>
-                    </PreviewBox>
-                )}
-            </ChatInputWrapper>
-
-            {showEmoji && (
-            <EmojiWrapper>
-                <EmojiPicker
-                onEmojiClick={e =>
-                    setValue(v => v + e.emoji)
-                }
-                theme="dark"
-                />
-            </EmojiWrapper>
-            )}
-
-            <ChatForm onSubmit={handleSend}>
-                <PlusButton type="button" onClick={openFilePicker}>
-                    +
-                </PlusButton>
-
-                <input
-                type="file"
-                hidden
-                ref={fileInputRef}
-                accept="image/*,video/*,.pdf,.doc,.docx"
-                onChange={
-                    e => handleFileSelect(e.target.files[0])
-                }
-                />
-
-                 {/* 😀 Emoji button */}
-                <EmojiBtn
-                    type="button"
-                    onClick={() => setShowEmoji(v => !v)}
-                >
-                    😀
-                </EmojiBtn>
-
-                <MessageInput 
-                value={value}
-                onChange={handleTyping}
-                placeholder={
-                    pendingFile ? "Add a caption…" : "Type a message"
-                }
-                />
-
-                <SendButton disabled={!value.trim() && !pendingFile}>
-                    Send
-                </SendButton>
-            </ChatForm>
-        </ChatWrapper>
+  const [messages, setMessages] = useState([]);
+  const [presenceUsers, setPresenceUsers] = useState([]);
+  const [typingUsers, setTypingUsers] = useState([]);
+  const [usersMap, setUsersMap] = useState({});
+  const [value, setValue] = useState("");
+  const [pendingFile, setPendingFile] = useState(null);
+  const [showEmoji, setShowEmoji] = useState(false);
+  const [showOnlineDropdown, setShowOnlineDropdown] = useState(false);
+
+  const dummyRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
+
+  /* ---------------- MESSAGES ---------------- */
+
+  useEffect(() => {
+    const q = query(
+      collection(firestore, `rooms/${roomId}/messages`),
+      orderBy("createdAt", "asc")
     );
-}
-const ChatInputWrapper = styled.div`
-    position: relative;   /* ✅ REQUIRED */
-`;
 
-/* ---------------- Styled Components ---------------- */
+    return onSnapshot(q, snap => {
+      setMessages(
+        snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      );
+
+      setTimeout(() => {
+        dummyRef.current?.scrollIntoView({ behavior: "smooth" });
+      }, 50);
+    });
+  }, [roomId]);
+
+  /* ---------------- USERS (ONE TIME FETCH) ---------------- */
+
+  useEffect(() => {
+    const fetchUsers = async () => {
+      const snap = await getDocs(collection(firestore, "users"));
+      const map = {};
+      snap.forEach(doc => {
+        map[doc.id] = doc.data();
+      });
+      setUsersMap(map);
+    };
+    fetchUsers();
+  }, []);
+
+  /* ---------------- TYPING ---------------- */
+
+  useEffect(() => {
+    return onSnapshot(
+      collection(firestore, "rooms", roomId, "typing"),
+      snap => {
+        setTypingUsers(
+          snap.docs.map(d => d.id).filter(id => id !== user.uid)
+        );
+      }
+    );
+  }, [roomId, user.uid]);
+
+  const handleTyping = e => {
+    const text = e.target.value;
+    setValue(text);
+
+    const typingRef = doc(
+      firestore,
+      "rooms",
+      roomId,
+      "typing",
+      user.uid
+    );
+
+    if (!text.trim()) {
+      deleteDoc(typingRef);
+      return;
+    }
+
+    setDoc(typingRef, {
+      uid: user.uid,
+      at: serverTimestamp()
+    });
+
+    clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      deleteDoc(typingRef);
+    }, 1200);
+  };
+
+  /* ---------------- PRESENCE ---------------- */
+
+  useEffect(() => {
+    const presenceRef = collection(
+      firestore,
+      `rooms/${roomId}/presence`
+    );
+
+    return onSnapshot(presenceRef, snap => {
+
+      const active = snap.docs.map(d => ({
+        uid: d.id,
+        ...d.data()
+      }));
+
+      setPresenceUsers(active);
+    });
+  }, [roomId]);
+
+  /* ---------------- PRESENCE HEARTBEAT ---------------- */
+
+  useEffect(() => {
+    const ref = doc(
+      firestore,
+      `rooms/${roomId}/presence/${user.uid}`
+    );
+
+    const beat = async () => {
+      await setDoc(ref, {
+        online: true,
+        lastSeen: serverTimestamp(),
+        displayName:
+          user.displayName || shortName(user.email),
+        photoURL: user.photoURL || null
+      }, { merge: true });
+    };
+
+    beat();
+    const interval = setInterval(beat, 8000);
+
+    return async () => {
+      clearInterval(interval);
+      await setDoc(ref, {
+        online: false,
+        lastSeen: serverTimestamp()
+      }, { merge: true });
+    };
+  }, [roomId, user]);
+
+  /* ---------------- SEND MESSAGE ---------------- */
+
+  const handleSend = async e => {
+    e.preventDefault();
+    if (!value.trim() && !pendingFile) return;
+
+    let messageData = {
+      uid: user.uid,
+      displayName: user.displayName,
+      photoURL: user.photoURL,
+      createdAt: serverTimestamp()
+    };
+
+    if (pendingFile) {
+      const path = `chat/${roomId}/${Date.now()}_${pendingFile.name}`;
+      const fileRef = storageRef(storage, path);
+
+      await uploadBytes(fileRef, pendingFile);
+      const url = await getDownloadURL(fileRef);
+
+      let type = "file";
+      if (pendingFile.type.startsWith("image")) type = "image";
+      if (pendingFile.type.startsWith("video")) type = "video";
+
+      messageData = {
+        ...messageData,
+        type,
+        text: value || "",
+        fileURL: url,
+        fileName: pendingFile.name,
+        storagePath: path
+      };
+
+      setPendingFile(null);
+    } else {
+      messageData = {
+        ...messageData,
+        type: "text",
+        text: value
+      };
+    }
+
+    await addDoc(
+      collection(firestore, `rooms/${roomId}/messages`),
+      messageData
+    );
+
+    setValue("");
+  };
+
+  const typingNames = typingUsers.map(uid =>
+    usersMap[uid]?.name || "Someone"
+  );
+
+  return (
+    <ChatWrapper>
+
+      <ChatTop>
+        <OnlineCount onClick={() =>
+          setShowOnlineDropdown(v => !v)
+        }>
+          🟢 Online: {presenceUsers.filter(u => u.online).length}
+        </OnlineCount>
+
+        <ChatActions>
+          <ActionBtn onClick={leaveRoom}>← Back</ActionBtn>
+          {canDelete && (
+            <ActionBtn $danger onClick={onDelete}>
+              🗑 Delete
+            </ActionBtn>
+          )}
+        </ChatActions>
+      </ChatTop>
+
+      {showOnlineDropdown && (
+        <OnlineDropdown>
+          {presenceUsers.map(u => (
+            <OnlineItem key={u.uid}>
+              <img
+                src={u.photoURL || avatarFromSeed(u.displayName)}
+                alt=""
+              />
+              <div>
+                <strong>{u.displayName}</strong>
+                <small>
+                  {u.online
+                    ? "Online"
+                    : `Last seen ${onlineDuration(u.lastSeen)}`}
+                </small>
+              </div>
+            </OnlineItem>
+          ))}
+        </OnlineDropdown>
+      )}
+
+      <Messages>
+        {messages.map(m => (
+          <ChatMessage
+            key={m.id}
+            message={m}
+            currentUid={user.uid}
+            roomId={roomId}
+          />
+        ))}
+        <div ref={dummyRef} />
+      </Messages>
+
+      {typingNames.length > 0 && (
+        <Typing>
+          {typingNames.length === 1
+            ? `${typingNames[0]} is typing...`
+            : `${typingNames.join(", ")} are typing...`}
+        </Typing>
+      )}
+
+      <ChatInputWrapper>
+
+        {pendingFile && (
+          <PreviewBox>
+            {pendingFile.type.startsWith("image") && (
+              <img
+                src={URL.createObjectURL(pendingFile)}
+                alt="preview"
+              />
+            )}
+
+            {pendingFile.type.startsWith("video") && (
+              <video controls>
+                <source
+                  src={URL.createObjectURL(pendingFile)}
+                />
+              </video>
+            )}
+
+            {!pendingFile.type.startsWith("image") &&
+              !pendingFile.type.startsWith("video") && (
+                <FilePreview>
+                  📄 <span>{pendingFile.name}</span>
+                </FilePreview>
+              )}
+
+            <CancelPreview
+              onClick={() => setPendingFile(null)}
+            >
+              ✕
+            </CancelPreview>
+          </PreviewBox>
+        )}
+
+        {showEmoji && (
+          <EmojiWrapper>
+            <EmojiPicker
+              theme="dark"
+              onEmojiClick={e =>
+                setValue(v => v + e.emoji)
+              }
+            />
+          </EmojiWrapper>
+        )}
+
+        <ChatForm onSubmit={handleSend}>
+          <PlusButton
+            type="button"
+            onClick={() =>
+              fileInputRef.current.click()
+            }
+          >
+            +
+          </PlusButton>
+
+          <input
+            hidden
+            type="file"
+            ref={fileInputRef}
+            accept="image/*,video/*,.pdf,.doc,.docx"
+            onChange={e =>
+              setPendingFile(e.target.files[0])
+            }
+          />
+
+          <EmojiBtn
+            type="button"
+            onClick={() =>
+              setShowEmoji(v => !v)
+            }
+          >
+            😀
+          </EmojiBtn>
+
+          <MessageInput
+            value={value}
+            onChange={handleTyping}
+            placeholder={
+              pendingFile
+                ? "Add a caption..."
+                : "Type a message"
+            }
+          />
+
+          <SendButton
+            disabled={!value.trim() && !pendingFile}
+          >
+            Send
+          </SendButton>
+        </ChatForm>
+
+      </ChatInputWrapper>
+    </ChatWrapper>
+  );
+}
+
+/* ---------------- LAYOUT ---------------- */
 
 const ChatWrapper = styled.div`
-    background: #161b22;
-    padding: 10px 5px 5px 5px;
-    height: 89vh;
-    display: flex;
-    flex-direction: column;
+  background: #0f172a;
+  height: 89vh;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  border-radius: 12px;
 `;
+
+/* ---------------- HEADER ---------------- */
 
 const ChatTop = styled.div`
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
 `;
 
-const Muted = styled.small`
-    color: #9ca3af;
-    font-size: 13px;
+const OnlineCount = styled.div`
+  font-size: 14px;
+  color: #38bdf8;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+
+  &:hover {
+    color: #60a5fa;
+  }
 `;
 
 const ChatActions = styled.div`
-    display: flex;
-    gap: 10px;
+  display: flex;
+  gap: 10px;
 `;
 
 const ActionBtn = styled.button`
-    padding: 6px 12px;
-    font-size: 13px;
-    background: ${({ $danger }) => ($danger ? "#b91c1c" : "#2563eb")};
-    border: none;
-    border-radius: 6px;
-    color: white;
-    cursor: pointer;
-    transition: 0.2s ease;
+  padding: 6px 14px;
+  background: ${({ $danger }) =>
+    $danger ? "#dc2626" : "#2563eb"};
+  border: none;
+  border-radius: 6px;
+  color: white;
+  cursor: pointer;
+  transition: 0.2s ease;
 
-    &:hover {
-        background: ${({ $danger }) =>
-        $danger ? "#7f1d1d" : "#1d4ed8"};
-    }
+  &:hover {
+    background: ${({ $danger }) =>
+      $danger ? "#b91c1c" : "#1d4ed8"};
+  }
 `;
 
+/* ---------------- ONLINE DROPDOWN ---------------- */
 
-const PresenceList = styled.div`
-    background: #1f2937;
-    padding: 12px;
-    border-radius: 10px;
-    margin-bottom: 12px;
-    max-height: 120px;
-    overflow-y: auto;
-    `;
-
-    const PresenceItem = styled.div`
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 6px 0;
-    border-bottom: 1px solid #374151;
-
-    &:last-child {
-        border-bottom: none;
-    }
+const OnlineDropdown = styled.div`
+  background: #1e293b;
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 10px;
+  max-height: 200px;
+  overflow-y: auto;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.5);
 `;
 
-const AvatarSm = styled.img`
+const OnlineItem = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+
+  img {
     width: 30px;
     height: 30px;
     border-radius: 50%;
+  }
+
+  strong {
+    font-size: 14px;
+  }
+
+  small {
+    display: block;
+    font-size: 12px;
+    color: #94a3b8;
+  }
 `;
+
+/* ---------------- MESSAGES ---------------- */
 
 const Messages = styled.div`
-    flex: 1;
-    overflow-y: auto;
-    padding-right: 8px;
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 6px;
+  scroll-behavior: smooth;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 10px;
+  }
 `;
+
+/* ---------------- TYPING ---------------- */
 
 const Typing = styled.div`
-    margin: 8px 0;
-    font-size: 13px;
-    color: #93c5fd;
-    font-style: italic;
+  font-size: 13px;
+  color: #38bdf8;
+  font-style: italic;
+  margin: 6px 0;
 `;
+
+/* ---------------- INPUT WRAPPER ---------------- */
+
+const ChatInputWrapper = styled.div`
+  position: relative;
+`;
+
+/* ---------------- FILE PREVIEW ---------------- */
 
 const PreviewBox = styled.div`
-    position: absolute;
-    bottom: 0;         /* ⬆ above input bar */
-    right: 60px;          /* ➡ near send button */
-    background: #1f2937;
-    border-radius: 10px;
-    max-width: 260px;
-    padding: 10px;
-    z-index: 10;
+  position: absolute;
+  bottom: 60px;
+  right: 10px;
+  background: #1e293b;
+  border-radius: 12px;
+  max-width: 260px;
+  padding: 12px;
+  z-index: 20;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.6);
 
-    img,
-    video {
-        max-width: 100%;
-        border-radius: 8px;
-    }
-
-    @media (max-width: 768px) {
-        max-width: 220px;
-    }
+  img,
+  video {
+    max-width: 100%;
+    border-radius: 8px;
+  }
 `;
 
-
 const FilePreview = styled.div`
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 14px;
-    color: #93c5fd;
-    background: #111827;
-    padding: 10px;
-    border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #60a5fa;
+  background: #0f172a;
+  padding: 10px;
+  border-radius: 8px;
 
-    span {
-        word-break: break-all;
-    }
+  span {
+    word-break: break-word;
+  }
 `;
 
 const CancelPreview = styled.button`
-    position: absolute;
-    top: -8px;
-    right: -8px;
-    background: #b91c1c;
-    color: white;
-    border: none;
-    border-radius: 50%;
-    width: 22px;
-    height: 22px;
-    cursor: pointer;
-    font-size: 12px;
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  background: #ef4444;
+  border: none;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  color: white;
+  font-size: 12px;
+  cursor: pointer;
+
+  &:hover {
+    background: #dc2626;
+  }
 `;
 
-
-const ChatForm = styled.form`
-    display: flex;
-    gap: 5px;
-    margin-top: 10px;
-
-    input {
-        flex: 1;
-        padding: 12px;
-        background: #1f2937;
-        border: 1px solid #374151;
-        border-radius: 8px;
-        color: white;
-
-        &:focus {
-        outline: none;
-        border-color: #2563eb;
-        }
-    }
-
-    button {
-        padding: 8px 16px;
-        background: #2563eb;
-        border: none;
-        border-radius: 6px;
-        color: white;
-        cursor: pointer;
-
-        &:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-        }
-    }
-`;
-
-const PlusButton = styled.button`
-    width: 40px;
-    height: 40px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    border-radius: 50%;
-    background: #2563eb;
-    color: white;
-    font-size: 22px;
-    border: none;
-    cursor: pointer;
-    flex-shrink: 0;
-
-    &:hover {
-        background: #1d4ed8;
-    }
-`;
-
-const MessageInput = styled.input`
-    flex: 1;
-    padding: 12px;
-    background: #1f2937;
-    border: 1px solid #374151;
-    border-radius: 8px;
-    color: white;
-
-    &:focus {
-        outline: none;
-        border-color: #2563eb;
-    }
-`;
-
-const SendButton = styled.button`
-    padding: 8px 16px;
-    background: #2563eb;
-    border: none;
-    border-radius: 6px;
-    color: white;
-    cursor: pointer;
-
-    &:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-    }
-`;
-
-const EmojiBtn = styled.button`
-    width: 40px;
-    height: 40px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    border-radius: 50%;
-    background: #2563eb;
-    font-size: 18px;
-    color: white;
-    border: none;
-    cursor: pointer;
-    flex-shrink: 0;
-
-    &:hover {
-        background: #1d4ed8;
-    }
-`;
+/* ---------------- EMOJI ---------------- */
 
 const EmojiWrapper = styled.div`
   position: absolute;
-  bottom: 70px;
-  left: 20px;
-  z-index: 20;
+  bottom: 60px;
+  left: 10px;
+  z-index: 30;
 `;
 
+/* ---------------- INPUT BAR ---------------- */
+
+const ChatForm = styled.form`
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  align-items: center;
+`;
+
+const PlusButton = styled.button`
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: #2563eb;
+  border: none;
+  color: white;
+  font-size: 20px;
+  cursor: pointer;
+  transition: 0.2s;
+
+  &:hover {
+    background: #1d4ed8;
+  }
+`;
+
+const EmojiBtn = styled.button`
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: #334155;
+  border: none;
+  font-size: 18px;
+  color: white;
+  cursor: pointer;
+
+  &:hover {
+    background: #475569;
+  }
+`;
+
+const MessageInput = styled.input`
+  flex: 1;
+  padding: 12px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  color: white;
+  font-size: 14px;
+
+  &:focus {
+    outline: none;
+    border-color: #2563eb;
+  }
+`;
+
+const SendButton = styled.button`
+  padding: 10px 16px;
+  background: #2563eb;
+  border: none;
+  border-radius: 10px;
+  color: white;
+  cursor: pointer;
+  font-weight: 500;
+  transition: 0.2s;
+
+  &:hover {
+    background: #1d4ed8;
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+`;
 
 export default ChatRoom;

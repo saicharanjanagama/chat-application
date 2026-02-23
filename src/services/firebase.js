@@ -1,6 +1,15 @@
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+
+import {
+  getFirestore,
+  enableIndexedDbPersistence,
+} from "firebase/firestore";
+
+import {
+  getDatabase
+} from "firebase/database";
+
 import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
@@ -18,4 +27,7 @@ const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const firestore = getFirestore(app);
 export const storage = getStorage(app);
+export const realtimeDB = getDatabase(app);
 
+// 🔥 ENABLE OFFLINE CACHE
+enableIndexedDbPersistence(firestore).catch(console.log);

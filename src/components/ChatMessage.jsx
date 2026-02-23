@@ -1,77 +1,138 @@
 import styled from "styled-components";
-import { deleteDoc, doc, updateDoc } from "firebase/firestore";
+import {
+  deleteDoc,
+  doc,
+  updateDoc,
+  arrayUnion,
+  arrayRemove
+} from "firebase/firestore";
 import { firestore } from "../services/firebase";
-import { deleteObject, ref as storageRef } from "firebase/storage";
+import {
+  deleteObject,
+  ref as storageRef,
+  ref as refFromURL
+} from "firebase/storage";
 import { storage } from "../services/firebase";
 import { fmtTime, avatarFromSeed } from "../utils/helpers";
 import Linkify from "linkify-react";
 import { motion } from "framer-motion";
+import { useState } from "react";
 
 function ChatMessage({ message, currentUid, roomId }) {
-  const { id, uid, text, displayName, photoURL, createdAt, type, fileURL, fileName } = message;
-  const mine = uid === currentUid;
+  const {
+    id,
+    uid,
+    text,
+    displayName,
+    photoURL,
+    createdAt,
+    type,
+    fileURL,
+    fileName,
+    storagePath,
+    edited = false,
+    reactions = {},
+    replyTo
+  } = message;
 
-  /* Delete message */
+  const mine = uid === currentUid;
+  const [processing, setProcessing] = useState(false);
+
+  /* ---------------- DELETE ---------------- */
   const deleteMsg = async () => {
+    if (processing) return;
     if (!window.confirm("Delete this message?")) return;
 
     try {
-      // 1️⃣ Delete file from Storage (if exists)
-      if (message.fileURL) {
-        const fileRef = storageRef(storage, message.fileURL);
+      setProcessing(true);
+
+      if (storagePath) {
+        const fileRef = storageRef(storage, storagePath);
         await deleteObject(fileRef);
+      } else if (fileURL) {
+        try {
+          const fileRef = refFromURL(storage, fileURL);
+          await deleteObject(fileRef);
+        } catch {}
       }
 
-      // 2️⃣ Delete message from Firestore
       await deleteDoc(
         doc(firestore, `rooms/${roomId}/messages/${id}`)
       );
-    } catch (err) {
-      console.error("Delete failed:", err);
+    } catch {
       alert("Failed to delete message");
     }
+
+    setProcessing(false);
   };
 
-
-  /* Edit message */
+  /* ---------------- EDIT ---------------- */
   const editMsg = async () => {
     const updatedText = prompt("Edit message:", text);
-    if (!updatedText || updatedText === text) return;
+    if (!updatedText || updatedText.trim() === text) return;
 
     await updateDoc(
       doc(firestore, `rooms/${roomId}/messages/${id}`),
-      { text: updatedText }
+      {
+        text: updatedText.trim(),
+        edited: true
+      }
     );
+  };
+
+  /* ---------------- REACTIONS ---------------- */
+  const toggleReaction = async emoji => {
+    const ref = doc(
+      firestore,
+      `rooms/${roomId}/messages/${id}`
+    );
+
+    const alreadyReacted =
+      reactions?.[emoji]?.includes(currentUid);
+
+    await updateDoc(ref, {
+      [`reactions.${emoji}`]: alreadyReacted
+        ? arrayRemove(currentUid)
+        : arrayUnion(currentUid)
+    });
   };
 
   return (
     <MessageRow $mine={mine}>
       {/* Avatar */}
       <Avatar
-      src={
-        photoURL
-          ? photoURL
-          : avatarFromSeed(displayName || uid || "User")
-      }
-      referrerPolicy="no-referrer"
-      alt="avatar"
-      onError={e => {
-        e.currentTarget.src = avatarFromSeed(uid);
-      }}
+        src={
+          photoURL
+            ? photoURL
+            : avatarFromSeed(displayName || uid || "User")
+        }
+        referrerPolicy="no-referrer"
+        alt="avatar"
+        onError={e => {
+          e.currentTarget.src = avatarFromSeed(uid);
+        }}
       />
 
       {/* Message */}
-      <MessageBubble 
-      $mine={mine}
-      as={motion.div}
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2, ease: "easeOut" }}
+      <MessageBubble
+        $mine={mine}
+        as={motion.div}
+        initial={{ opacity: 0, y: 6 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2, ease: "easeOut" }}
       >
         <Meta>
           <Sender>{displayName}</Sender>
           <Time>{fmtTime(createdAt)}</Time>
         </Meta>
+
+        {/* REPLY PREVIEW */}
+        {replyTo && (
+          <ReplyPreview>
+            <strong>{replyTo.displayName}</strong>
+            <p>{replyTo.text}</p>
+          </ReplyPreview>
+        )}
 
         {/* IMAGE */}
         {type === "image" && (
@@ -81,14 +142,7 @@ function ChatMessage({ message, currentUid, roomId }) {
               alt="sent"
               onClick={() => window.open(fileURL)}
             />
-
-            {text && (
-              <Caption>
-                <Linkify options={{ target: "_blank", rel: "noopener noreferrer" }}>
-                  {text}
-                </Linkify>
-              </Caption>
-            )}
+            {text && <Caption>{text}</Caption>}
           </>
         )}
 
@@ -98,55 +152,66 @@ function ChatMessage({ message, currentUid, roomId }) {
             <MediaVideo controls>
               <source src={fileURL} />
             </MediaVideo>
-
-            {text && (
-              <Caption>
-                <Linkify options={{ target: "_blank", rel: "noopener noreferrer" }}>
-                  {text}
-                </Linkify>
-              </Caption>
-            )}
+            {text && <Caption>{text}</Caption>}
           </>
         )}
 
         {/* FILE */}
         {type === "file" && (
           <>
-            <FileBox href={fileURL} target="_blank">
-             📄 {fileName}
+            <FileBox href={fileURL} target="_blank" rel="noopener noreferrer">
+              📄 {fileName}
             </FileBox>
-
-            {text && (
-              <Caption>
-                <Linkify options={{ target: "_blank", rel: "noopener noreferrer" }}>
-                  {text}
-                </Linkify>
-              </Caption>
-            )}
+            {text && <Caption>{text}</Caption>}
           </>
         )}
 
+        {/* TEXT */}
         {(!type || type === "text") && (
-          <Text> 
-            <Linkify 
-            options={{ 
-              target: "_blank", 
-              rel: "noopener noreferrer", 
-              className: "chat-link" 
-            }} > {text} 
-            </Linkify> 
+          <Text>
+            <Linkify
+              options={{
+                target: "_blank",
+                rel: "noopener noreferrer",
+                className: "chat-link"
+              }}
+            >
+              {text}
+            </Linkify>
+            {edited && <EditedBadge>(edited)</EditedBadge>}
           </Text>
         )}
 
+        {/* STATUS TICKS */}
+        {/* {mine && <TickWrapper>{renderTicks()}</TickWrapper>} */}
+
+        {/* REACTIONS */}
+        {Object.keys(reactions).length > 0 && (
+          <ReactionBar>
+            {Object.entries(reactions).map(
+              ([emoji, users]) =>
+                users.length > 0 && (
+                  <ReactionItem
+                    key={emoji}
+                    onClick={() =>
+                      toggleReaction(emoji)
+                    }
+                  >
+                    {emoji} {users.length}
+                  </ReactionItem>
+                )
+            )}
+          </ReactionBar>
+        )}
       </MessageBubble>
 
       {/* Actions */}
       {mine && (
         <Actions>
-          <IconButton $edit onClick={editMsg}>
+          <IconButton $edit onClick={editMsg} disabled={processing}>
             <EditIcon src="images/edit.png" alt="edit" />
           </IconButton>
-          <IconButton $delete onClick={deleteMsg}>
+          <IconButton $delete onClick={deleteMsg} disabled={processing}>
             <DeleteIcon src="images/delete.png" alt="delete" />
           </IconButton>
         </Actions>
@@ -154,8 +219,6 @@ function ChatMessage({ message, currentUid, roomId }) {
     </MessageRow>
   );
 }
-
-
 /* ---------------- Styled Components ---------------- */
 
 const MessageRow = styled.div`
@@ -287,6 +350,40 @@ const DeleteIcon = styled.img`
   ${IconButton}:hover & {
     opacity: 1;
   }
+`;
+
+const EditedBadge = styled.span`
+  font-size: 11px;
+  opacity: 0.6;
+  margin-left: 6px;
+`;
+
+const ReplyPreview = styled.div`
+  background: #111827;
+  padding: 6px;
+  border-left: 3px solid #2563eb;
+  border-radius: 6px;
+  margin-bottom: 6px;
+  font-size: 12px;
+
+  p {
+    margin: 2px 0 0;
+  }
+`;
+
+const ReactionBar = styled.div`
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+`;
+
+const ReactionItem = styled.div`
+  background: #111827;
+  padding: 4px 8px;
+  border-radius: 20px;
+  font-size: 12px;
+  cursor: pointer;
 `;
 
 export default ChatMessage;

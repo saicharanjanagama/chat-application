@@ -7,79 +7,80 @@ import {
   doc,
   serverTimestamp,
   deleteDoc,
-  getDocs, 
+  getDocs
 } from "firebase/firestore";
 
 import { firestore } from "../../services/firebase";
 import ChatRoom from "../chat/ChatRoom";
 
 function ChatRooms({ user }) {
-  const roomsRef = collection(firestore, "rooms");
   const [rooms, setRooms] = useState([]);
   const [currentRoom, setCurrentRoom] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [roomName, setRoomName] = useState("");
 
-  /* ---------------- Listen to rooms ---------------- */
+  /* ---------------- LISTEN ROOMS ---------------- */
+
   useEffect(() => {
-    const unsub = onSnapshot(roomsRef, snap =>
-      setRooms(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-    );
-    return unsub;
-  }, [roomsRef]);
+    const roomsRef = collection(firestore, "rooms");
 
+    const unsub = onSnapshot(roomsRef, snap => {
+      const list = snap.docs.map(d => ({
+        id: d.id,
+        ...d.data()
+      }));
 
-  /* ---------------- Create room ---------------- */
+      setRooms(list.sort((a, b) =>
+        a.createdAt?.seconds > b.createdAt?.seconds ? -1 : 1
+      ));
+    });
+
+    return () => unsub();
+  }, []);
+
+  /* ---------------- CREATE ROOM ---------------- */
+
   const createRoom = async () => {
-    const name = prompt("Room name:");
+    const name = roomName.trim();
     if (!name) return;
 
-    const roomId = name.trim();
+    const roomId = name.toLowerCase();
 
-    // prevent empty / duplicate rooms
-    if (!roomId) return;
-
-    // optional: prevent duplicate rooms
     if (rooms.some(r => r.id === roomId)) {
       alert("Room already exists");
       return;
     }
 
     await setDoc(doc(firestore, "rooms", roomId), {
-      name: roomId,           // keep name field for UI
+      name,
       createdBy: user.uid,
-      createdAt: serverTimestamp(),
+      createdAt: serverTimestamp()
     });
 
-    setCurrentRoom({
-      id: roomId,
-      name: roomId,
-    });
+    setRoomName("");
+    setCreating(false);
+    setCurrentRoom({ id: roomId, name });
   };
 
-  /* ---------------- Check delete permission ---------------- */
-  const canDeleteRoom = roomId => {
-    const room = rooms.find(r => r.id === roomId);
-    if (!room) return false;
-    return room.createdBy === user.uid;
-  };
+  /* ---------------- DELETE ROOM ---------------- */
 
-  /* ---------------- Delete room ---------------- */
   const deleteRoom = async roomId => {
     if (!window.confirm("Delete this room permanently?")) return;
 
     const room = rooms.find(r => r.id === roomId);
     if (!room || room.createdBy !== user.uid) {
-      alert("You are not allowed to delete this room");
+      alert("Not allowed");
       return;
     }
 
     const subs = ["messages", "typing", "presence"];
 
     for (const sub of subs) {
-      const q = await getDocs(
+      const snap = await getDocs(
         collection(firestore, "rooms", roomId, sub)
       );
 
-      for (const d of q.docs) {
+      for (const d of snap.docs) {
         await deleteDoc(d.ref);
       }
     }
@@ -88,131 +89,218 @@ function ChatRooms({ user }) {
     setCurrentRoom(null);
   };
 
+  const canDeleteRoom = roomId => {
+    const room = rooms.find(r => r.id === roomId);
+    return room?.createdBy === user.uid;
+  };
 
-  /* ---------------- Inside room ---------------- */
+  /* ---------------- INSIDE ROOM ---------------- */
+
   if (currentRoom) {
     return (
-      <>
-        <ChatRoom
-        key={currentRoom.id}   // 🔥 VERY IMPORTANT
+      <ChatRoom
+        key={currentRoom.id}
         roomId={currentRoom.id}
         user={user}
-        leaveRoom={() => {
-          setCurrentRoom(null)
-        }}
+        leaveRoom={() => setCurrentRoom(null)}
         canDelete={canDeleteRoom(currentRoom.id)}
         onDelete={() => deleteRoom(currentRoom.id)}
-        />
-      </>
+      />
     );
   }
 
-  /* ---------------- Rooms list ---------------- */
+  /* ---------------- ROOMS LIST UI ---------------- */
+
   return (
     <RoomsWrapper>
-      <RoomsHeader>
-        <RoomInfo>
-          <Title>Chat Rooms</Title>
 
-          {/* 🟢 Online indicator */}
-          <OnlineDot title="Online" />
-        </RoomInfo>
-        <Button onClick={createRoom}>➕ Create Room</Button>
+      <RoomsHeader>
+        <Title>Chat Rooms</Title>
+
+        {!creating ? (
+          <CreateBtn onClick={() => setCreating(true)}>
+            + Create Room
+          </CreateBtn>
+        ) : (
+          <CreateBox>
+            <RoomInput
+              value={roomName}
+              onChange={e => setRoomName(e.target.value)}
+              placeholder="Room name"
+            />
+            <SmallBtn onClick={createRoom}>Create</SmallBtn>
+            <CancelBtn onClick={() => setCreating(false)}>
+              ✕
+            </CancelBtn>
+          </CreateBox>
+        )}
       </RoomsHeader>
 
       <RoomList>
         {rooms.map(r => (
           <RoomItem
-          key={r.id}
-          onClick={() => setCurrentRoom({
-            id: r.id,
-            name: r.name,
-          })}
+            key={r.id}
+            onClick={() =>
+              setCurrentRoom({
+                id: r.id,
+                name: r.name
+              })
+            }
           >
-            <strong>{r.id}</strong>
-            {canDeleteRoom(r.id) && <Tag>Creator</Tag>}
+            <RoomLeft>
+              <RoomAvatar>
+                {r.name?.charAt(0).toUpperCase()}
+              </RoomAvatar>
+              <div>
+                <RoomName>{r.name}</RoomName>
+                <RoomSub>
+                  Created by {r.createdBy === user.uid ? "You" : "User"}
+                </RoomSub>
+              </div>
+            </RoomLeft>
+
+            {canDeleteRoom(r.id) && (
+              <CreatorTag>Creator</CreatorTag>
+            )}
           </RoomItem>
         ))}
       </RoomList>
+
     </RoomsWrapper>
   );
 }
 
-
-/* ---------------- Styled Components ---------------- */
+/* ---------------- STYLING ---------------- */
 
 const RoomsWrapper = styled.div`
-  background: #161b22;
+  background: #0f172a;
   padding: 20px;
+  min-height: 89vh;
+  border-radius: 12px;
 `;
 
 const RoomsHeader = styled.div`
   display: flex;
   justify-content: space-between;
   align-items: center;
-`;
-
-const RoomInfo = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 8px;
-`;
-
-const OnlineDot = styled.span`
-  width: 8px;
-  height: 8px;
-  background: #00a884;
-  border-radius: 50%;
+  margin-bottom: 18px;
 `;
 
 const Title = styled.h2`
-  font-size: 20px;
+  font-size: 22px;
+  color: white;
 `;
 
-const Button = styled.button`
-  padding: ${({ $small }) => ($small ? "6px 12px" : "8px 16px")};
-  font-size: ${({ $small }) => ($small ? "13px" : "15px")};
-  background: ${({ $danger }) => ($danger ? "#b91c1c" : "#2563eb")};
+const CreateBtn = styled.button`
+  background: #2563eb;
   border: none;
-  border-radius: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
   color: white;
   cursor: pointer;
-  transition: 0.2s ease;
+  transition: 0.2s;
 
   &:hover {
-    background: ${({ $danger }) =>
-      $danger ? "#7f1d1d" : "#1d4ed8"};
+    background: #1d4ed8;
+  }
+`;
+
+const CreateBox = styled.div`
+  display: flex;
+  gap: 6px;
+`;
+
+const RoomInput = styled.input`
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  background: #1e293b;
+  color: white;
+`;
+
+const SmallBtn = styled.button`
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: none;
+  background: #10b981;
+  color: white;
+  cursor: pointer;
+
+  &:hover {
+    background: #059669;
+  }
+`;
+
+const CancelBtn = styled.button`
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: none;
+  background: #ef4444;
+  color: white;
+  cursor: pointer;
+
+  &:hover {
+    background: #dc2626;
   }
 `;
 
 const RoomList = styled.ul`
   list-style: none;
-  margin-top: 15px;
   padding: 0;
+  margin: 0;
 `;
 
 const RoomItem = styled.li`
-  padding: 14px 18px;
-  background: #1f2937;
+  background: #1e293b;
+  padding: 14px;
   margin-bottom: 10px;
-  border-radius: 8px;
+  border-radius: 12px;
   cursor: pointer;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  transition: 0.2s ease;
+  transition: 0.2s;
 
   &:hover {
-    background: #374151;
+    background: #334155;
   }
 `;
 
-const Tag = styled.span`
-  padding: 3px 8px;
-  background: #ffd70033;
-  color: #ffd700;
-  border-radius: 6px;
+const RoomLeft = styled.div`
+  display: flex;
+  gap: 12px;
+  align-items: center;
+`;
+
+const RoomAvatar = styled.div`
+  width: 42px;
+  height: 42px;
+  background: #2563eb;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: 600;
+`;
+
+const RoomName = styled.div`
+  font-size: 16px;
+  font-weight: 500;
+  color: white;
+`;
+
+const RoomSub = styled.div`
   font-size: 12px;
+  color: #94a3b8;
+`;
+
+const CreatorTag = styled.span`
+  font-size: 12px;
+  background: #facc1533;
+  color: #facc15;
+  padding: 4px 8px;
+  border-radius: 6px;
 `;
 
 export default ChatRooms;
