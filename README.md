@@ -21,7 +21,7 @@
 
 ## 🌍 Live Application 
 
-🔗 **Live URL:**  [💬 Real-Time Chat Application](https://chatapplication-87b43.web.app/login)
+🔗 **Live URL:**  [💬 Real-Time Chat Application](https://chatapplication-87b43.web.app/)
 
 ---
 
