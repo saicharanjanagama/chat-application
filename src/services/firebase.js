@@ -13,13 +13,13 @@ import {
 import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
-  apiKey: "FIREBASE_API_KEY",
-  authDomain: "FIREBASE_AUTH_DOMAIN",
-  projectId: "FIREBASE_PROJECT_ID",
-  storageBucket: "FIREBASE_STORAGE_BUCKET",
-  messagingSenderId: "FIREBASE_MESSAGING_SENDER_ID",
-  appId: "FIREBASE_APP_ID",
-  measurementId: "FIREBASE_MEASUREMENT_ID",
+  apiKey: "AIzaSyA2lIHytOx-Wv-HzHwlDW7QY1d0Wi4yPaM",
+  authDomain: "chatapplication-87b43.firebaseapp.com",
+  projectId: "chatapplication-87b43",
+  storageBucket: "chatapplication-87b43.firebasestorage.app",
+  messagingSenderId: "380297100736",
+  appId: "1:380297100736:web:5019b1e6bbbf074db51c25",
+  measurementId: "G-VS558FHW6W"
 };
 
 const app = initializeApp(firebaseConfig);
